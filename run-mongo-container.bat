@@ -1,0 +1,1 @@
+docker run --platform linux/amd64 -d --name mongo-db -p 27017:27017 theshultz/kaplat-calculator-mongo-instance:latest

@@ -12,18 +12,7 @@ public class CalcController : ControllerBase
     private static readonly List<HistoryEntry> History = new();
     private static readonly ILog StackLogger = LogManager.GetLogger("stack-logger");
     private static readonly ILog IndependentLogger = LogManager.GetLogger("independent-logger");
-    
-    private static bool IsOperationValid(string? op, out int expectedArgCount)
-    {
-        if (!string.IsNullOrWhiteSpace(op) && OperationArgumentCount.TryGetValue(op, out expectedArgCount))
-        {
-            return true;
-        }
 
-        expectedArgCount = 0;
-        return false;
-    }
-    
     private static readonly Dictionary<string, int> OperationArgumentCount = new()
     {
         ["plus"] = 2,
@@ -34,6 +23,18 @@ public class CalcController : ControllerBase
         ["abs"] = 1,
         ["fact"] = 1
     };
+
+    private static bool IsOperationValid(string? op, out int expectedArgCount)
+    {
+        if (!string.IsNullOrWhiteSpace(op) && OperationArgumentCount.TryGetValue(op, out expectedArgCount))
+        {
+            return true;
+        }
+
+        expectedArgCount = 0;
+        return false;
+    }
+
 
     private int PerformOperation(string op, List<int> args)
     {
@@ -94,9 +95,11 @@ public class CalcController : ControllerBase
 
         if (args == null || args.Count != expectedArgCount)
         {
-            string errorMessage = $"Error: {(args == null || args.Count < expectedArgCount ? "Not enough" : "Too many")} arguments to perform the operation {request.operation}";
+            string errorMessage =
+                $"Error: {(args == null || args.Count < expectedArgCount ? "Not enough" : "Too many")} " +
+                $"arguments to perform the operation {request.operation}";
             IndependentLogger.Error($"Server encountered an error ! message: {errorMessage}");
-            
+
             return Conflict
             (
                 new CalcResponse
@@ -118,7 +121,7 @@ public class CalcController : ControllerBase
             });
 
             IndependentLogger.Info($"Performing operation {request.operation}. Result is {result}");
-            IndependentLogger.Debug($"Performing operation: {op}({String.Join(",",args)}) = {result}");
+            IndependentLogger.Debug($"Performing operation: {op}({String.Join(",", args)}) = {result}");
             return Ok(new CalcResponse { result = result });
         }
         catch (Exception ex)
@@ -138,8 +141,8 @@ public class CalcController : ControllerBase
     public IActionResult StackSize()
     {
         StackLogger.Info($"Stack size is {CalculatorStack.Count}");
-        StackLogger.Debug($"Stack content (first == top): [{string.Join(", ",CalculatorStack)}]");
-        return Ok(new CalcResponse {result = CalculatorStack.Count});
+        StackLogger.Debug($"Stack content (first == top): [{string.Join(", ", CalculatorStack)}]");
+        return Ok(new CalcResponse { result = CalculatorStack.Count });
     }
 
     [HttpPut("stack/arguments")]
@@ -147,10 +150,11 @@ public class CalcController : ControllerBase
     {
         var args = request.arguments;
         int argsCount = args?.Count ?? 0;
-        StackLogger.Info($"Adding total of {argsCount} argument(s) to the stack | Stack size: {CalculatorStack.Count + argsCount}");
-        StackLogger.Debug($"Adding arguments: {string.Join(",",args!)} | " +
+        StackLogger.Info(
+            $"Adding total of {argsCount} argument(s) to the stack | Stack size: {CalculatorStack.Count + argsCount}");
+        StackLogger.Debug($"Adding arguments: {string.Join(",", args!)} | " +
                           $"Stack size before {CalculatorStack.Count} | stack size after {CalculatorStack.Count + argsCount}");
-        
+
         if (args != null)
         {
             foreach (var arg in args)
@@ -188,16 +192,18 @@ public class CalcController : ControllerBase
         if (CalculatorStack.Count < expectedArgCount)
         {
             string errorMessage = $"Error: cannot implement operation {op}. " +
-                                  $"It requires {expectedArgCount} arguments and the stack has only {CalculatorStack.Count} arguments";
+                                  $"It requires {expectedArgCount} arguments " +
+                                  $"and the stack has only {CalculatorStack.Count} arguments";
             StackLogger.Error($"Server encountered an error ! message: {errorMessage}");
             return Conflict
-                (
+            (
                 new CalcResponse
-                    {
-                        errorMessage = $"Error: cannot implement operation {op}. " +
-                                       $"It requires {expectedArgCount} arguments and the stack has only {CalculatorStack.Count} arguments"
-                    }
-                );
+                {
+                    errorMessage = $"Error: cannot implement operation {op}. " +
+                                   $"It requires {expectedArgCount} arguments " +
+                                   $"and the stack has only {CalculatorStack.Count} arguments"
+                }
+            );
         }
 
         List<int> args = new() { CalculatorStack.Pop() };
@@ -213,21 +219,22 @@ public class CalcController : ControllerBase
                 result = result
             });
             StackLogger.Info($"Performing operation {op}. Result is {result} | stack size: {CalculatorStack.Count}");
-            StackLogger.Debug($"Performing operation: {op}({String.Join(",",args)}) = {result}");
+            StackLogger.Debug($"Performing operation: {op}({String.Join(",", args)}) = {result}");
             return Ok(new CalcResponse { result = result });
         }
         catch (Exception ex)
         {
             StackLogger.Error($"Server encountered an error ! message: {ex.Message}");
             return Conflict
-                (
+            (
                 new CalcResponse
-                    {
-                        errorMessage = ex.Message
-                    }
-                );
+                {
+                    errorMessage = ex.Message
+                }
+            );
         }
     }
+
     [HttpDelete("stack/arguments")]
     public IActionResult PopArgs([FromQuery] int count)
     {
@@ -235,26 +242,30 @@ public class CalcController : ControllerBase
         {
             if (count > CalculatorStack.Count)
             {
-                string errorMessage = $"Error: cannot remove {count} from the stack. It has only {CalculatorStack.Count} arguments";
+                string errorMessage =
+                    $"Error: cannot remove {count} from the stack. It has only {CalculatorStack.Count} arguments";
                 StackLogger.Error($"Server encountered an error ! message: {errorMessage}");
                 return Conflict
-                    (
+                (
                     new CalcResponse
-                        {
-                            errorMessage = errorMessage
-                        }
-                    );
+                    {
+                        errorMessage = errorMessage
+                    }
+                );
             }
+
             for (var i = 0; i < count; i++)
             {
                 CalculatorStack.Pop();
             }
-            
-            StackLogger.Info($"Removing total {count} argument(s) from the stack | Stack size: {CalculatorStack.Count}");
+
+            StackLogger.Info(
+                $"Removing total {count} argument(s) from the stack | Stack size: {CalculatorStack.Count}");
         }
 
         return Ok(new CalcResponse { result = CalculatorStack.Count });
     }
+
     [HttpGet("history")]
     public IActionResult GetHistory([FromQuery] string? flavor)
     {
@@ -266,7 +277,8 @@ public class CalcController : ControllerBase
             entries = History.FindAll(entry => entry.flavor == "STACK");
             entries.AddRange(History.FindAll(entry => entry.flavor == "INDEPENDENT"));
             StackLogger.Info($"History: So far total {entries.Count(entry => entry.flavor == "STACK")} stack actions");
-            IndependentLogger.Info($"History: So far total {entries.Count(entry => entry.flavor == "INDEPENDENT")} independent actions");
+            IndependentLogger.Info(
+                $"History: So far total {entries.Count(entry => entry.flavor == "INDEPENDENT")} independent actions");
         }
         else if (flavor == "STACK")
         {
@@ -276,9 +288,10 @@ public class CalcController : ControllerBase
         else
         {
             entries = History.FindAll(entry => entry.flavor == "INDEPENDENT");
-            IndependentLogger.Info($"History: So far total {entries.Count(entry => entry.flavor == "INDEPENDENT")} independent actions");
+            IndependentLogger.Info(
+                $"History: So far total {entries.Count(entry => entry.flavor == "INDEPENDENT")} independent actions");
         }
-        
+
         return Ok(new { result = entries });
     }
 }

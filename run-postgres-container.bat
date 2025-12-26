@@ -1,0 +1,1 @@
+docker run --platform linux/amd64 -d --name postgres-db -p 5432:5432 theshultz/kaplat-calculator-postgres-instance:latest

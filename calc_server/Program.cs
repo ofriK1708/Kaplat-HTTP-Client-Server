@@ -1,13 +1,11 @@
 using calc_server;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.ConfigureKestrel(options =>
-{
-    options.ListenAnyIP(8496);
-});
+builder.WebHost.ConfigureKestrel(options => { options.ListenAnyIP(8496); });
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
-    options.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+    options.JsonSerializerOptions.DefaultIgnoreCondition =
+        System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
 });
 
 // Use only AddLog4Net for logging
@@ -21,4 +19,3 @@ app.UseMiddleware<RequestLoggingMiddleware>();
 app.MapControllers();
 
 app.Run();
-
