@@ -1,6 +1,10 @@
+using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using calc_server.models;
 using log4net;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using MongoDB.Driver;
 
 namespace calc_server;
 
@@ -12,6 +16,44 @@ public class CalcController : ControllerBase
     private static readonly List<HistoryEntry> History = new();
     private static readonly ILog StackLogger = LogManager.GetLogger("stack-logger");
     private static readonly ILog IndependentLogger = LogManager.GetLogger("independent-logger");
+    private readonly CalculatorDbContext _postgresContext;
+    private readonly IMongoCollection<OperationEntry> _mongoCollection;
+
+    public CalcController(CalculatorDbContext postgresContext, IMongoClient mongoClient)
+    {
+        _postgresContext = postgresContext;
+        // Connect to the specific DB and Collection for Mongo
+        var database = mongoClient.GetDatabase("calculator");
+        _mongoCollection = database.GetCollection<OperationEntry>("calculator");
+    }
+
+    private async Task SaveToDatabases(HistoryEntry entry)
+    {
+        // create the entry object
+        var dbEntry = OperationEntry.FromHistoryEntry(entry);
+        
+        // Manually generate ID
+        var maxId = await _postgresContext.Operations.MaxAsync(o => (int?)o.rawid) ?? 0;
+        dbEntry.rawid = maxId + 1;
+
+        try
+        {
+            // save to Postgres
+            _postgresContext.Operations.Add(dbEntry);
+            await _postgresContext.SaveChangesAsync();
+            
+            // save to mongo
+            await _mongoCollection.InsertOneAsync(dbEntry);
+        }
+        catch (Microsoft.EntityFrameworkCore.DbUpdateException ex)
+        {
+            IndependentLogger.Error($"SaveChanges failed: {ex.Message}");
+            IndependentLogger.Error($"Base exception: {ex.GetBaseException()?.Message}");
+            if (ex.InnerException != null) IndependentLogger.Error($"Inner exception: {ex.InnerException.Message}");
+
+            throw; // rethrow or return a proper API response (400/500) after logging
+        }
+    }
 
     private static readonly Dictionary<string, int> OperationArgumentCount = new()
     {
@@ -75,7 +117,7 @@ public class CalcController : ControllerBase
     }
 
     [HttpPost("independent/calculate")]
-    public IActionResult IndependentCalculate([FromBody] CalcRequest request)
+    public async Task<IActionResult> IndependentCalculate([FromBody] CalcRequest request)
     {
         var op = request.operation?.ToLowerInvariant();
         var args = request.arguments;
@@ -112,16 +154,20 @@ public class CalcController : ControllerBase
         try
         {
             var result = PerformOperation(op!, args);
-            History.Add(new HistoryEntry
+            IndependentLogger.Info($"Performing operation {request.operation}. Result is {result}");
+            IndependentLogger.Debug($"Performing operation: {op}({String.Join(",", args)}) = {result}");
+            HistoryEntry entry = new HistoryEntry
             {
-                flavor = "INDEPENDENT",
+                flavor = HistoryEntry.INDEPENDENT_FLAVOR,
                 operation = request.operation!,
                 arguments = args,
                 result = result
-            });
+            };
 
-            IndependentLogger.Info($"Performing operation {request.operation}. Result is {result}");
-            IndependentLogger.Debug($"Performing operation: {op}({String.Join(",", args)}) = {result}");
+            History.Add(entry);
+            await SaveToDatabases(entry);
+
+
             return Ok(new CalcResponse { result = result });
         }
         catch (Exception ex)
@@ -173,7 +219,7 @@ public class CalcController : ControllerBase
     }
 
     [HttpGet("stack/operate")]
-    public IActionResult StackOperate([FromQuery] string operation)
+    public async Task<IActionResult> StackOperate([FromQuery] string operation)
     {
         var op = operation.ToLower();
         if (!IsOperationValid(op, out var expectedArgCount))
@@ -211,15 +257,17 @@ public class CalcController : ControllerBase
         try
         {
             var result = PerformOperation(op, args);
-            History.Add(new HistoryEntry
+            StackLogger.Info($"Performing operation {op}. Result is {result} | stack size: {CalculatorStack.Count}");
+            StackLogger.Debug($"Performing operation: {op}({String.Join(",", args)}) = {result}");
+            var entry = new HistoryEntry
             {
-                flavor = "STACK",
+                flavor = HistoryEntry.STACK_FLAVOR,
                 operation = operation,
                 arguments = args,
                 result = result
-            });
-            StackLogger.Info($"Performing operation {op}. Result is {result} | stack size: {CalculatorStack.Count}");
-            StackLogger.Debug($"Performing operation: {op}({String.Join(",", args)}) = {result}");
+            };
+            History.Add(entry);
+            await SaveToDatabases(entry);
             return Ok(new CalcResponse { result = result });
         }
         catch (Exception ex)
@@ -267,31 +315,79 @@ public class CalcController : ControllerBase
     }
 
     [HttpGet("history")]
-    public IActionResult GetHistory([FromQuery] string? flavor)
+    public async Task<IActionResult> GetHistory([FromQuery] string? flavor, [FromQuery, Required] string? 
+        persistenceMethod)
     {
-        List<HistoryEntry> entries;
-
-        if (string.IsNullOrEmpty(flavor))
+        List<OperationEntry> entries;
+        if (persistenceMethod != HistoryEntry.PERSISTNECE_MONGO &&
+            persistenceMethod != HistoryEntry.PERSISTENCE_POSTGRES)
         {
-            // No filter — return STACK first, then INDEPENDENT
-            entries = History.FindAll(entry => entry.flavor == "STACK");
-            entries.AddRange(History.FindAll(entry => entry.flavor == "INDEPENDENT"));
-            StackLogger.Info($"History: So far total {entries.Count(entry => entry.flavor == "STACK")} stack actions");
-            IndependentLogger.Info(
-                $"History: So far total {entries.Count(entry => entry.flavor == "INDEPENDENT")} independent actions");
+            string errorMessage =
+                $"Error: unknown persistence method";
+            return Conflict
+            (
+                new CalcResponse
+                {
+                    errorMessage = errorMessage
+                }
+            );
         }
-        else if (flavor == "STACK")
+        if (persistenceMethod == HistoryEntry.PERSISTNECE_MONGO)
         {
-            entries = History.FindAll(entry => entry.flavor == "STACK");
-            StackLogger.Info($"History: So far total {entries.Count(entry => entry.flavor == "STACK")} stack actions");
+            entries = await FetchFromMongo(flavor);
         }
         else
         {
-            entries = History.FindAll(entry => entry.flavor == "INDEPENDENT");
-            IndependentLogger.Info(
-                $"History: So far total {entries.Count(entry => entry.flavor == "INDEPENDENT")} independent actions");
+            entries = await FetchFromPostgres(flavor);
         }
 
         return Ok(new { result = entries });
+    }
+
+    private async Task<List<OperationEntry>> FetchFromPostgres(string? flavor)
+    {
+        List<OperationEntry> entries;
+        if (String.IsNullOrEmpty(flavor))
+        {
+            entries = await _postgresContext.Operations
+                .Where(ope => ope.flavor == HistoryEntry.INDEPENDENT_FLAVOR)
+                .ToListAsync();
+
+            entries.AddRange(await _postgresContext.Operations
+                .Where(ope => ope.flavor == HistoryEntry.STACK_FLAVOR)
+                .ToListAsync());
+        }
+        else
+        {
+            entries = await _postgresContext.Operations
+                .Where(e => e.flavor == flavor)
+                .ToListAsync();
+        }
+
+        return entries;
+    }
+
+    private async Task<List<OperationEntry>> FetchFromMongo(string? flavor)
+    {
+        List<OperationEntry> entries;
+        var independentFlavorFilter = Builders<OperationEntry>.Filter.Eq(ope => ope.flavor, HistoryEntry
+            .INDEPENDENT_FLAVOR);
+        var stackFlavorFilter = Builders<OperationEntry>.Filter.Eq(poe => poe.flavor, HistoryEntry.STACK_FLAVOR);
+        if (String.IsNullOrEmpty(flavor))
+        {
+            // No filter — return STACK first, then INDEPENDENT
+            var independentCursor = await _mongoCollection.FindAsync(independentFlavorFilter);
+            var stackCursor = await _mongoCollection.FindAsync(stackFlavorFilter);
+            entries = await independentCursor.ToListAsync();
+            entries.AddRange(await stackCursor.ToListAsync());
+        }
+        else
+        {
+            var cursor = flavor == HistoryEntry.INDEPENDENT_FLAVOR
+                ? await _mongoCollection.FindAsync(independentFlavorFilter)
+                : await _mongoCollection.FindAsync(stackFlavorFilter);
+            entries = await cursor.ToListAsync();
+        }
+        return  entries;
     }
 }
